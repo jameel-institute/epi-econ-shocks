@@ -7,22 +7,24 @@
 using CSV
 using DataFrames
 using Dates
+using EpiEconShocks
 using StatsBase
 using Trapz
 
-#READ IN DATA
-df_tsdp = CSV.read(raw"../tsdp.csv", DataFrame);
-df_tsdw = CSV.read(raw"../tsdw.csv", DataFrame);
-df_tsdc = CSV.read(raw"../tsdc.csv", DataFrame);
+# READ IN DATA
+datadir = "data/raw/"
+df_tsdp = CSV.read(joinpath(datadir, "tsdp.csv"), DataFrame);
+df_tsdw = CSV.read(joinpath(datadir, "tsdw.csv"), DataFrame);
+df_tsdc = CSV.read(joinpath(datadir, "tsdc.csv"), DataFrame);
 
-SIM_END = Date(2025, 11, 25);#end of exercise
+SIM_END = Date(2025, 11, 25); #end of exercise
 SIM_BEG = SIM_END - Day(90);
 
-df_tsdp = df_tsdp[(df_tsdp.date .> SIM_BEG) .& (df_tsdp.date .<= SIM_END), :];
-df_tsdw = df_tsdw[(df_tsdw.date .> SIM_BEG) .& (df_tsdw.date .<= SIM_END), :];
-df_tsdc = df_tsdc[(df_tsdc.date .> SIM_BEG) .& (df_tsdc.date .<= SIM_END), :];
+filter!(:date => x -> SIM_BEG < x <= SIM_END, df_tsdp);
+filter!(:date => x -> SIM_BEG < x <= SIM_END, df_tsdw);
+filter!(:date => x -> SIM_BEG < x <= SIM_END, df_tsdc);
 
-#PARAMETERS
+# PARAMETERS
 N_TOT = 67e6; #total population
 N_WORK = 30e6; #total workforce
 N_NESS = 20e6; #non-essential workforce
@@ -32,41 +34,66 @@ A_MILD = 0.50; #relative productivity of mildly symptomatic
 A_CAR = 0.50; #relative productivity of caregiving adults
 PHI_ECO = 0.01 * 19216182.0 / N_TOT; #fitted value from Pangollo but rescaled from NY Metro to UK population
 
-#DEFINE DAILY SHOCKS
-l_notill =
-    (
-        N_WORK .- (
-            (1 .- A_MILD) .* df_tsdw.prev_mldi .+ df_tsdw.prev_sevi .+
-            df_tsdw.occupancy_hosp .+ df_tsdw.deaths
-        )
-    ) ./ N_WORK;
-l_notcar =
-    (
-        N_WORK .-
-        (1 .- A_CAR) .* EMP_POP .*
-        (df_tsdc.prev_mldi .+ df_tsdc.prev_sevi .+ df_tsdc.occupancy_hosp)
-    ) ./ N_WORK;
-l_notecl =
-    (
-        N_WORK .-
-        N_NESS .*
-        ((df_tsdw.date .≥ Date(2025, 10, 31)) .- (df_tsdw.date .≥ Date(2025, 11, 25)))
-    ) ./ N_WORK;
-l_notscl =
-    (
-        N_WORK .-
-        (1 .- A_CAR) .* EMP_POP .* N_SCHC .*
-        ((df_tsdc.date .≥ Date(2025, 10, 10)) .- (df_tsdc.date .≥ Date(2025, 11, 25)))
-    ) ./ N_WORK;
+# CLOSURE change or application dates
+closure_date_01 = Date(2025, 10, 10)
+closure_date_02 = Date(2025, 10, 31)
+closure_date_03 = Date(2025, 11, 25)
+
+# DEFINE DAILY SHOCKS
+l_notill = (N_WORK .- ((1 .- A_MILD) .* df_tsdw.prev_mldi .+ df_tsdw.prev_sevi .+
+             df_tsdw.occupancy_hosp .+ df_tsdw.deaths)) ./ N_WORK;
+
+l_notcar = (N_WORK .-
+            (1 .- A_CAR) .* EMP_POP .*
+            (df_tsdc.prev_mldi .+ df_tsdc.prev_sevi .+ df_tsdc.occupancy_hosp)) ./ N_WORK;
+
+l_notecl = (N_WORK .-
+            N_NESS .*
+            ((df_tsdw.date .≥ closure_date_02) .-
+             (df_tsdw.date .≥ closure_date_03))) ./ N_WORK;
+
+l_notscl = (N_WORK .-
+            (1 .- A_CAR) .* EMP_POP .* N_SCHC .*
+            ((df_tsdc.date .≥ closure_date_01) .-
+             (df_tsdc.date .≥ closure_date_03))) ./ N_WORK;
+
 l_avl = l_notill .* l_notcar .* l_notecl .* l_notscl;
+
 l_shock = 1 .- l_avl;
 
 c_shock = 1 .- exp.(-PHI_ECO .* [0; diff(df_tsdp.deaths)]);
 
-df_shocks =
-    DataFrame(date = Dates.value.(df_tsdp.date), l_shock = l_shock, c_shock = c_shock);
+# NOTE: L.66 and L.69 not really necessary as we need available labour
+# and realised consumption
+df_shocks = DataFrame(
+    date = Dates.value.(df_tsdp.date), l_shock = l_shock, c_shock = c_shock);
 
-#CALCULATE OUTPUT
-vec_shocks =
-    [trapz(df_shocks.date, df_shocks.l_shock), trapz(df_shocks.date, df_shocks.c_shock)] ./
-    (df_shocks.date[end] - (df_shocks.date[1] - 1));
+# CALCULATE OUTPUT
+vec_shocks = [
+    trapz(df_shocks.date, df_shocks.l_shock),
+    trapz(df_shocks.date, df_shocks.c_shock)] ./
+             (df_shocks.date[end] - (df_shocks.date[1] - 1.0));
+
+# TRANSLATE TO SCALING FACTORS
+vec_scaling = 1.0 .- vec_shocks;
+labour_scaling = vec_scaling[1];
+consumption_scaling = vec_scaling[end];
+
+# DEFINE PARAM SHOCKS FOR EPIECONSHOCKS
+# NOTE: ASSUMPTION: labour shock affects all regions and labour sectors equally
+labour_shock = ParameterShock(
+    "qe", ["skilled labor", "unskilled labor"], labour_scaling
+);
+consumption_shock = ParameterShock(
+    "qpa", ["svces"], consumption_scaling
+);
+
+# GENERATE INITIAL MODEL FROM GTAP 11 data in `data/raw/gtap11`
+datadir_gtap = "data/raw/gtap11/"
+model = EpiEconShocks.ModelInit.initial_gtap_model(datadir_gtap);
+
+# RUN MODEL AFTER PASSING SHOCKS
+output = shock_gtap(model, [labour_shock, consumption_shock]);
+
+# GET CHANGE IN GDP BETWEEN EQUILIBRIA
+output.delta_gdp
