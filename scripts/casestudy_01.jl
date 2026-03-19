@@ -12,7 +12,7 @@ using StatsBase
 using Trapz
 
 # READ IN DATA
-datadir = "data/raw/"
+datadir = "data/raw/casestudy_01"
 df_tsdp = CSV.read(joinpath(datadir, "tsdp.csv"), DataFrame);
 df_tsdw = CSV.read(joinpath(datadir, "tsdw.csv"), DataFrame);
 df_tsdc = CSV.read(joinpath(datadir, "tsdc.csv"), DataFrame);
