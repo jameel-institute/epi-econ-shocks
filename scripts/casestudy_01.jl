@@ -49,8 +49,8 @@ l_notcar = (N_WORK .-
 
 l_notecl = (N_WORK .-
             N_NESS .*
-            ((df_tsdw.date .≥ closure_date_02) .-
-             (df_tsdw.date .≥ closure_date_03))) ./ N_WORK;
+            (closure_date_02 .<= df_tsdw.date .< closure_date_03)
+            ) ./ N_WORK;
 
 l_notscl = (N_WORK .-
             (1 .- A_CAR) .* EMP_POP .* N_SCHC .*
@@ -87,6 +87,13 @@ labour_shock = ParameterShock(
 consumption_shock = ParameterShock(
     "qpa", ["svces"], consumption_scaling
 );
+
+# assume increased cost of imports potentially affected by supply
+# chain disruptions by scaling tariffs `tms` on derived commodities
+comm_cost_increase = 1.25 # is 25% a reasonable value?
+comm_supply_shock = ParameterShock(
+    "tms", ["extract", "manuf", "processed food"], comm_cost_increase
+)
 
 # GENERATE INITIAL MODEL FROM GTAP 11 data in `data/raw/gtap11`
 datadir_gtap = "data/raw/gtap11/"
