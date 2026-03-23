@@ -274,7 +274,7 @@ version = "4.1.1"
 deps = ["CSV", "DataFrames", "DiffEqCallbacks", "LinearAlgebra", "OrdinaryDiffEq", "SciMLBase", "StaticArrays", "Statistics"]
 git-tree-sha1 = "a3e27b6322c5a9fd594fd34b18779ae512017bf0"
 repo-rev = "main"
-repo-url = "git@github.com:jameel-institute/Daedalus.jl.git"
+repo-url = "https://github.com/jameel-institute/Daedalus.jl.git"
 uuid = "05fc9732-d2bf-478b-9a56-f88318f7a02f"
 version = "0.0.7"
 
@@ -474,7 +474,7 @@ weakdeps = ["Adapt", "ChainRulesCore"]
 deps = ["DataFrames", "GlobalTradeAnalysisProjectModelV7", "HeaderArrayFile", "NamedArrays"]
 git-tree-sha1 = "84eb2dd8f298160ed35cac72ce5a47ee254897d9"
 repo-rev = "main"
-repo-url = "git@github.com:jameel-institute/EpiEconShocks.jl.git"
+repo-url = "https://github.com/jameel-institute/EpiEconShocks.jl.git"
 uuid = "d5106ebc-8f76-4abe-9d9c-e2e957300c8c"
 version = "0.0.4"
 
