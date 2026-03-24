@@ -1,6 +1,9 @@
 #TO DO:
+#harmonise GTAP sectoral disaggregation and check . in function call
 #avoidant behaviour
 #data and parameter uncertainty
+#what scaling for N_ess
+#what is it? income via consumption in pangollo
 
 #PACKAGES USED
 using CSV
@@ -65,57 +68,44 @@ filter!(:date => x -> SIM_BEG <= x <= SIM_END, df_tsdw);
 filter!(:date => x -> SIM_BEG <= x <= SIM_END, df_tsdc);
 
 # DEFINE DISAGGREGATED ECON SHOCKS
+t        = Dates.value.(df_tsdp.date);
+
 l_notill = 1 .- (((1 .- A_MILD) .* df_tsdw.prev_mldi .+ df_tsdw.prev_sevi .+ df_tsdw.occupancy_hosp .+ df_tsdw.deaths) ./ sum(N_WORK));
-
 l_notcar = 1 .- EMP_POP .* (((1 .- A_CARE) .*df_tsdc.prev_mldi .+ df_tsdc.prev_sevi .+ df_tsdc.occupancy_hosp) ./ sum(N_WORK));
-
 l_notecl = 1 .- P_FURL .* (closure_date_02 .<= df_tsdw.date .<= SIM_END);
-
 l_notscl = 1 .- EMP_POP .* (1 .- A_WFH) .* (N_SCHC ./ sum(N_WORK)) .* (closure_date_01 .<= df_tsdc.date .<= SIM_END);
 
 l_avl    = l_notill .* l_notcar .* l_notecl .* l_notscl;
-
 c_avl    = exp.(-PHI_ECO .* [0; diff(df_tsdp.deaths)]);
 
 # AGGREGATE SHOCKS FOR NIGEM
 l_agg    = sum(l_avl .* (N_WORK ./ sum(N_WORK)), dims = 2);
 c_agg    = sum(c_avl .* (E_HHC ./ sum(E_HHC)), dims = 2);
 
-t        = Dates.value.(df_tsdp.date);
 l_aggcum = trapz(t, l_agg') / (t[end] - (t[1] - 1.0));
 c_aggcum = trapz(t, c_agg') / (t[end] - (t[1] - 1.0));
 
-l_shock  = 100 .* l_aggcum .- 100;
-c_shock  = 100 .* c_aggcum .- 100;
+l_shock  = 100 .* (l_aggcum .- 1);
+c_shock  = 100 .* (c_aggcum .- 1);
 
 df_shocks = DataFrame(quarter = collect(1:length(l_shock)), UKE = l_shock, UKC = c_shock);
 CSV.write(joinpath(datadir, "NIGEM_central.csv"), df_shocks);
 
+# AGGREGATE SHOCKS FOR GTAP
+W = zeros(20,7);
+W[CartesianIndex.([1,1,2,3,3], [1,2,3,4,5])] .= 1;
+W[[4,5,6,7,10,11,12,13,14,15,16,17], 6]       = E_HHC[[4,5,6,7,10,11,12,13,14,15,16,17]] ./ sum(E_HHC[[4,5,6,7,10,11,12,13,14,15,16,17]]);
+W[[8,9,18,19,20], 7]                          = E_HHC[[8,9,18,19,20]] ./ sum(E_HHC[[8,9,18,19,20]]);
 
-# # NOTE: L.66 and L.69 not really necessary as we need available labour
-# # and realised consumption
-# df_shocks = DataFrame(
-#     date = Dates.value.(df_tsdp.date), l_shock = l_shock, c_shock = c_shock);
+l_agg = sum(l_avl .* (N_WORK ./ sum(N_WORK)), dims = 2);
+c_agg = c_avl * W;
 
-# # CALCULATE OUTPUT
-# vec_shocks = [
-#     trapz(df_shocks.date, df_shocks.l_shock),
-#     trapz(df_shocks.date, df_shocks.c_shock)] ./
-#              (df_shocks.date[end] - (df_shocks.date[1] - 1.0));
+l_aggcum = trapz(t, l_agg') / (t[end] - (t[1] - 1.0));
+c_aggcum = trapz(t, c_agg') / (t[end] - (t[1] - 1.0));
 
-# # TRANSLATE TO SCALING FACTORS
-# vec_scaling = 1.0 .- vec_shocks;
-# labour_scaling = vec_scaling[1];
-# consumption_scaling = vec_scaling[end];
-
-# # DEFINE PARAM SHOCKS FOR EPIECONSHOCKS
-# # NOTE: ASSUMPTION: labour shock affects all regions and labour sectors equally
-# labour_shock = ParameterShock(
-#     "qe", ["skilled labor", "unskilled labor"], labour_scaling
-# );
-# consumption_shock = ParameterShock(
-#     "qpa", ["svces"], consumption_scaling
-# );
+# DEFINE PARAMETER SHOCKS FOR EPIECONSHOCKS.JL
+labour_shock      = ParameterShock.("qe",  ["skilled labor", "unskilled labor"], l_aggcum); #labour shock affects all regions and sectors equally 
+consumption_shock = ParameterShock.("qpa", ["crops", "animals", "extract", "processed food", "manuf", "svces", "tpt_hosp_leis"], c_aggcum); 
 
 # # assume increased cost of imports potentially affected by supply
 # # chain disruptions by scaling tariffs `tms` on derived commodities
@@ -124,18 +114,12 @@ CSV.write(joinpath(datadir, "NIGEM_central.csv"), df_shocks);
 #     "tms", ["extract", "manuf", "processed food"], comm_cost_increase
 # )
 
-# # GENERATE INITIAL MODEL FROM GTAP 11 data in `data/raw/gtap11`
-# datadir_gtap = "data/raw/gtap11/"
-# model = EpiEconShocks.ModelInit.initial_gtap_model(datadir_gtap);
+# GENERATE INITIAL MODEL FROM GTAP 11 data in `data/raw/gtap11`
+datadir_gtap = "data/raw/gtap11/";
+model        = EpiEconShocks.ModelInit.initial_gtap_model(datadir_gtap);
 
-# # RUN MODEL AFTER PASSING SHOCKS
-# output = shock_gtap(model, [labour_shock, consumption_shock]);
+# RUN MODEL AFTER PASSING SHOCKS
+output = shock_gtap(model, [labour_shock, consumption_shock]);
 
-# # GET CHANGE IN GDP BETWEEN EQUILIBRIA
-# output.delta_gdp
-
-
-
-
-#what scaling for N_ess
-#what is it? income via consumption in pangollo
+# GET CHANGE IN GDP BETWEEN EQUILIBRIA
+output.delta_gdp
