@@ -1,107 +1,141 @@
 #TO DO:
-#parametrisation
-#sectoral disaggregation
 #avoidant behaviour
+#data and parameter uncertainty
 
 #PACKAGES USED
 using CSV
+using XLSX
 using DataFrames
 using Dates
-using EpiEconShocks
 using StatsBase
 using Trapz
+using EpiEconShocks
 
-# READ IN DATA
+# PARAMETERS
+#population by age in 2024 scaled to total population (https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/populationestimatesforukenglandandwalesscotlandandnorthernireland)
+N_TOT   = 66930425; #total population (via email)
+N_AGE   = [3574156, 3978857, 4204852, 4126585, 4166255, 4548970, 4796627, 4775770, 4529122, 4093384,
+           4420093, 4616723, 4288377, 3572657, 3096754, 2901851, 1840390, 1124778, 625236] .* (N_TOT ./ 69281437);
+
+#workforce by sector in 2024 scaled to total population (https://data-explorer.oecd.org/vis?df[ds]=DisseminateFinalDMZ&df[id]=DSD_NAMAIN10%40DF_TABLE7&df[ag]=OECD.SDD.NAD&dq=A.AUT...EMP....PS...&lom=LASTNPERIODS&lo=5&to[TIME_PERIOD]=false)
+N_WORK  = [358891, 53525, 2445007, 131789, 201530, 2141882, 4532352, 1644253, 2412496, 1492821, 
+           1110370, 629758, 2975812, 2734434, 1567856, 2723349, 4545941, 963524, 889977, 57176]' .* (N_TOT ./ 69281437);
+
+#furloughed workforce by sector (https://www.ons.gov.uk/employmentandlabourmarket/peopleinwork/employmentandemployeetypes/datasets/characteristicsofpeoplewhohavebeenfurloughedintheuk) 
+P_FURL  = [0.134, 0.209, 0.357, 0.209, 0.209, 0.397, 0.382, 0.216, 0.692, 0.216,
+           0.232, 0.232, 0.232, 0.232, 0.069, 0.174, 0.117, 0.556, 0.345, 0.345]';
+
+#population of school-children
+N_SCHC  = sum(N_AGE[1:3]);
+#ratio of population of workforce to adults
+EMP_POP = sum(N_WORK) / sum(N_AGE[5:end]); 
+
+#home-working workforce by sector in 2023 (https://www.ons.gov.uk/employmentandlabourmarket/peopleinwork/employmentandemployeetypes/articles/whoarethehybridworkers/2024-11-11)
+A_WFH   = [0.154, 0.154, 0.154, 0.154, 0.154, 0.14, 0.198, 0.112, 0.061, 0.769,
+           0.769, 0.4, 0.604, 0.273, 0.273, 0.472, 0.2, 0.193, 0.098, 0.098]';
+
+#relative productivity of workers who are mildly symptomatic
+A_MILD  = 0.50 .* A_WFH;
+#relative productivity of workers who are caregiving to mildly symptomatic
+A_CARE  = 0.50 .* A_WFH;
+
+#household consumption expenditure by sector in 2022 (https://www.oecd.org/en/data/datasets/input-output-tables.html)
+E_HHC   = [28978.715, 4717.879, 360055.722, 55604.819, 17992.213, 7976.728, 231374.941, 43813.051, 82393.223, 70985.688, 
+           113279.043, 373852.584, 16552.634, 41389.457, 10245.339, 56213.19, 48317.408, 40611.289, 44670.928, 2893.169]';
+
+#infection avoidance by sector from Pangollo scaled from population of NY Metro to UK           
+PHI_ECO = 0.01 * (19216182.0 / N_TOT) .* [0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0]'; 
+
+
+# SIMULATION AND CLOSURE DATES
+SIM_END = Date(2025, 11, 25); #end of exercise
+SIM_BEG = SIM_END - Day(90);
+
+closure_date_01 = Date(2025, 10, 10);
+closure_date_02 = Date(2025, 10, 31);
+
+# READ IN EPI DATA
 datadir = "data/raw/casestudy_01"
 df_tsdp = CSV.read(joinpath(datadir, "tsdp.csv"), DataFrame);
 df_tsdw = CSV.read(joinpath(datadir, "tsdw.csv"), DataFrame);
 df_tsdc = CSV.read(joinpath(datadir, "tsdc.csv"), DataFrame);
 
-SIM_END = Date(2025, 11, 25); #end of exercise
-SIM_BEG = SIM_END - Day(90);
+filter!(:date => x -> SIM_BEG <= x <= SIM_END, df_tsdp);
+filter!(:date => x -> SIM_BEG <= x <= SIM_END, df_tsdw);
+filter!(:date => x -> SIM_BEG <= x <= SIM_END, df_tsdc);
 
-filter!(:date => x -> SIM_BEG < x <= SIM_END, df_tsdp);
-filter!(:date => x -> SIM_BEG < x <= SIM_END, df_tsdw);
-filter!(:date => x -> SIM_BEG < x <= SIM_END, df_tsdc);
+# DEFINE DISAGGREGATED ECON SHOCKS
+l_notill = 1 .- (((1 .- A_MILD) .* df_tsdw.prev_mldi .+ df_tsdw.prev_sevi .+ df_tsdw.occupancy_hosp .+ df_tsdw.deaths) ./ sum(N_WORK));
 
-# PARAMETERS
-N_TOT = 67e6; #total population
-N_WORK = 30e6; #total workforce
-N_NESS = 20e6; #non-essential workforce
-N_SCHC = 0.172 * 67e6; #total school-children
-EMP_POP = 0.75; #ratio of workforce to adult-population
-A_MILD = 0.50; #relative productivity of mildly symptomatic
-A_CAR = 0.50; #relative productivity of caregiving adults
-PHI_ECO = 0.01 * 19216182.0 / N_TOT; #fitted value from Pangollo but rescaled from NY Metro to UK population
+l_notcar = 1 .- EMP_POP .* (((1 .- A_CARE) .*df_tsdc.prev_mldi .+ df_tsdc.prev_sevi .+ df_tsdc.occupancy_hosp) ./ sum(N_WORK));
 
-# CLOSURE change or application dates
-closure_date_01 = Date(2025, 10, 10)
-closure_date_02 = Date(2025, 10, 31)
-closure_date_03 = Date(2025, 11, 25)
+l_notecl = 1 .- P_FURL .* (closure_date_02 .<= df_tsdw.date .<= SIM_END);
 
-# DEFINE DAILY SHOCKS
-l_notill = (N_WORK .- ((1 .- A_MILD) .* df_tsdw.prev_mldi .+ df_tsdw.prev_sevi .+
-             df_tsdw.occupancy_hosp .+ df_tsdw.deaths)) ./ N_WORK;
+l_notscl = 1 .- EMP_POP .* (1 .- A_WFH) .* (N_SCHC ./ sum(N_WORK)) .* (closure_date_01 .<= df_tsdc.date .<= SIM_END);
 
-l_notcar = (N_WORK .-
-            (1 .- A_CAR) .* EMP_POP .*
-            (df_tsdc.prev_mldi .+ df_tsdc.prev_sevi .+ df_tsdc.occupancy_hosp)) ./ N_WORK;
+l_avl    = l_notill .* l_notcar .* l_notecl .* l_notscl;
 
-l_notecl = (N_WORK .-
-            N_NESS .*
-            (closure_date_02 .<= df_tsdw.date .< closure_date_03)
-) ./ N_WORK;
+c_avl    = exp.(-PHI_ECO .* [0; diff(df_tsdp.deaths)]);
 
-l_notscl = (N_WORK .-
-            (1 .- A_CAR) .* EMP_POP .* N_SCHC .*
-            ((df_tsdc.date .≥ closure_date_01) .-
-             (df_tsdc.date .≥ closure_date_03))) ./ N_WORK;
+# AGGREGATE SHOCKS FOR NIGEM
+l_agg    = sum(l_avl .* (N_WORK ./ sum(N_WORK)), dims = 2);
+c_agg    = sum(c_avl .* (E_HHC ./ sum(E_HHC)), dims = 2);
 
-l_avl = l_notill .* l_notcar .* l_notecl .* l_notscl;
+t        = Dates.value.(df_tsdp.date);
+l_aggcum = trapz(t, l_agg') / (t[end] - (t[1] - 1.0));
+c_aggcum = trapz(t, c_agg') / (t[end] - (t[1] - 1.0));
 
-l_shock = 1 .- l_avl;
+l_shock  = 100 .* l_aggcum .- 100;
+c_shock  = 100 .* c_aggcum .- 100;
 
-c_shock = 1 .- exp.(-PHI_ECO .* [0; diff(df_tsdp.deaths)]);
+df_shocks = DataFrame(quarter = collect(1:length(l_shock)), UKE = l_shock, UKC = c_shock);
+CSV.write(joinpath(datadir, "NIGEM_central.csv"), df_shocks);
 
-# NOTE: L.66 and L.69 not really necessary as we need available labour
-# and realised consumption
-df_shocks = DataFrame(
-    date = Dates.value.(df_tsdp.date), l_shock = l_shock, c_shock = c_shock);
 
-# CALCULATE OUTPUT
-vec_shocks = [
-    trapz(df_shocks.date, df_shocks.l_shock),
-    trapz(df_shocks.date, df_shocks.c_shock)] ./
-             (df_shocks.date[end] - (df_shocks.date[1] - 1.0));
+# # NOTE: L.66 and L.69 not really necessary as we need available labour
+# # and realised consumption
+# df_shocks = DataFrame(
+#     date = Dates.value.(df_tsdp.date), l_shock = l_shock, c_shock = c_shock);
 
-# TRANSLATE TO SCALING FACTORS
-vec_scaling = 1.0 .- vec_shocks;
-labour_scaling = vec_scaling[1];
-consumption_scaling = vec_scaling[end];
+# # CALCULATE OUTPUT
+# vec_shocks = [
+#     trapz(df_shocks.date, df_shocks.l_shock),
+#     trapz(df_shocks.date, df_shocks.c_shock)] ./
+#              (df_shocks.date[end] - (df_shocks.date[1] - 1.0));
 
-hosp_leisure_scaling = 0.75 # assumption of reduced travel and leisure
+# # TRANSLATE TO SCALING FACTORS
+# vec_scaling = 1.0 .- vec_shocks;
+# labour_scaling = vec_scaling[1];
+# consumption_scaling = vec_scaling[end];
 
-# DEFINE PARAM SHOCKS FOR EPIECONSHOCKS
-# NOTE: ASSUMPTION: labour shock affects all regions and labour sectors equally
-labour_shock = ParameterShock(
-    "qe", ["skilled labour", "unskilled labour"], labour_scaling
-);
-consumption_shock = ParameterShock(
-    "qpa", ["svces", "tpt_hosp_leis"], [consumption_scaling, hosp_leisure_scaling]
-);
+# # DEFINE PARAM SHOCKS FOR EPIECONSHOCKS
+# # NOTE: ASSUMPTION: labour shock affects all regions and labour sectors equally
+# labour_shock = ParameterShock(
+#     "qe", ["skilled labor", "unskilled labor"], labour_scaling
+# );
+# consumption_shock = ParameterShock(
+#     "qpa", ["svces"], consumption_scaling
+# );
 
-# assume decreased imports
-comm_import_scaling = [0.8, 0.75, 0.9] # scale separately for each sector
-comm_supply_shock = ParameterShock(
-    "qms", ["extract", "manuf", "processed food"], comm_import_scaling
-)
+# # assume increased cost of imports potentially affected by supply
+# # chain disruptions by scaling tariffs `tms` on derived commodities
+# comm_cost_increase = 1.25 # is 25% a reasonable value?
+# comm_supply_shock = ParameterShock(
+#     "tms", ["extract", "manuf", "processed food"], comm_cost_increase
+# )
 
-# GENERATE INITIAL MODEL FROM GTAP 11 data in `data/raw/gtap11`
-datadir_gtap = "data/raw/gtap11/"
-model = EpiEconShocks.ModelInit.initial_gtap_model(datadir_gtap);
+# # GENERATE INITIAL MODEL FROM GTAP 11 data in `data/raw/gtap11`
+# datadir_gtap = "data/raw/gtap11/"
+# model = EpiEconShocks.ModelInit.initial_gtap_model(datadir_gtap);
 
-# RUN MODEL AFTER PASSING SHOCKS
-output = shock_gtap(model, [labour_shock, consumption_shock]);
+# # RUN MODEL AFTER PASSING SHOCKS
+# output = shock_gtap(model, [labour_shock, consumption_shock]);
 
-# GET CHANGE IN GDP BETWEEN EQUILIBRIA
-output.delta_gdp
+# # GET CHANGE IN GDP BETWEEN EQUILIBRIA
+# output.delta_gdp
+
+
+
+
+#what scaling for N_ess
+#what is it? income via consumption in pangollo
