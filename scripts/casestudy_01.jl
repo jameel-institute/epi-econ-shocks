@@ -50,7 +50,7 @@ l_notcar = (N_WORK .-
 l_notecl = (N_WORK .-
             N_NESS .*
             (closure_date_02 .<= df_tsdw.date .< closure_date_03)
-            ) ./ N_WORK;
+) ./ N_WORK;
 
 l_notscl = (N_WORK .-
             (1 .- A_CAR) .* EMP_POP .* N_SCHC .*
@@ -79,20 +79,21 @@ vec_scaling = 1.0 .- vec_shocks;
 labour_scaling = vec_scaling[1];
 consumption_scaling = vec_scaling[end];
 
+hosp_leisure_scaling = 0.75 # assumption of reduced travel and leisure
+
 # DEFINE PARAM SHOCKS FOR EPIECONSHOCKS
 # NOTE: ASSUMPTION: labour shock affects all regions and labour sectors equally
 labour_shock = ParameterShock(
-    "qe", ["skilled labor", "unskilled labor"], labour_scaling
+    "qe", ["skilled labour", "unskilled labour"], labour_scaling
 );
 consumption_shock = ParameterShock(
-    "qpa", ["svces"], consumption_scaling
+    "qpa", ["svces", "tpt_hosp_leis"], [consumption_scaling, hosp_leisure_scaling]
 );
 
-# assume increased cost of imports potentially affected by supply
-# chain disruptions by scaling tariffs `tms` on derived commodities
-comm_cost_increase = 1.25 # is 25% a reasonable value?
+# assume decreased imports
+comm_import_scaling = [0.8, 0.75, 0.9] # scale separately for each sector
 comm_supply_shock = ParameterShock(
-    "tms", ["extract", "manuf", "processed food"], comm_cost_increase
+    "qms", ["extract", "manuf", "processed food"], comm_import_scaling
 )
 
 # GENERATE INITIAL MODEL FROM GTAP 11 data in `data/raw/gtap11`
