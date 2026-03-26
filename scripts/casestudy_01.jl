@@ -1,10 +1,3 @@
-#TO DO:
-#harmonise GTAP sectoral disaggregation and check . in function call
-#avoidant behaviour
-#data and parameter uncertainty
-#what scaling for N_ess
-#what is it? income via consumption in pangollo
-
 #PACKAGES USED
 using CSV
 using XLSX
@@ -13,6 +6,8 @@ using Dates
 using StatsBase
 using Trapz
 using EpiEconShocks
+using Distributions
+
 
 # PARAMETERS
 #population by age in 2024 scaled to total population (https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/populationestimatesforukenglandandwalesscotlandandnorthernireland)
@@ -27,8 +22,10 @@ N_WORK = [
     358891, 53525, 2445007, 131789, 201530, 2141882, 4532352, 1644253, 2412496, 1492821,
     1110370, 629758, 2975812, 2734434, 1567856, 2723349, 4545941, 963524, 889977, 57176]' .*
          (N_TOT ./ 69281437);
+#unemployment rate in 2025 Q4 (https://www.ons.gov.uk/employmentandlabourmarket/peopleinwork/employmentandemployeetypes/datasets/summaryoflabourmarketstatistics)
+P_UNEM = 0.052;
 
-#furloughed workforce by sector (https://www.ons.gov.uk/employmentandlabourmarket/peopleinwork/employmentandemployeetypes/datasets/characteristicsofpeoplewhohavebeenfurloughedintheuk) 
+#furloughed workforce by sector at any time 2020-2021 (https://www.ons.gov.uk/employmentandlabourmarket/peopleinwork/employmentandemployeetypes/datasets/characteristicsofpeoplewhohavebeenfurloughedintheuk) 
 P_FURL = [0.134, 0.209, 0.357, 0.209, 0.209, 0.397, 0.382, 0.216, 0.692, 0.216,
     0.232, 0.232, 0.232, 0.232, 0.069, 0.174, 0.117, 0.556, 0.345, 0.345]';
 
@@ -41,11 +38,6 @@ EMP_POP = sum(N_WORK) / sum(N_AGE[5:end]);
 A_WFH = [0.154, 0.154, 0.154, 0.154, 0.154, 0.14, 0.198, 0.112, 0.061, 0.769,
     0.769, 0.4, 0.604, 0.273, 0.273, 0.472, 0.2, 0.193, 0.098, 0.098]';
 
-#relative productivity of workers who are mildly symptomatic
-A_MILD = 0.50 .* A_WFH;
-#relative productivity of workers who are caregiving to mildly symptomatic
-A_CARE = 0.50 .* A_WFH;
-
 #household consumption expenditure by sector in 2022 (https://www.oecd.org/en/data/datasets/input-output-tables.html)
 E_HHC = [28978.715, 4717.879, 360055.722, 55604.819, 17992.213,
     7976.728, 231374.941, 43813.051, 82393.223, 70985.688,
@@ -56,6 +48,7 @@ E_HHC = [28978.715, 4717.879, 360055.722, 55604.819, 17992.213,
 PHI_ECO = 0.01 * (19216182.0 / N_TOT) .*
           [0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0]';
 
+
 # SIMULATION AND CLOSURE DATES
 SIM_END = Date(2025, 11, 25); #end of exercise
 SIM_BEG = SIM_END - Day(90);
@@ -63,8 +56,9 @@ SIM_BEG = SIM_END - Day(90);
 closure_date_01 = Date(2025, 10, 10);
 closure_date_02 = Date(2025, 10, 31);
 
+
 # READ IN EPI DATA
-datadir = "data/raw/casestudy_01"
+datadir = "data/raw/casestudy_01";
 df_tsdp = CSV.read(joinpath(datadir, "tsdp.csv"), DataFrame);
 df_tsdw = CSV.read(joinpath(datadir, "tsdw.csv"), DataFrame);
 df_tsdc = CSV.read(joinpath(datadir, "tsdc.csv"), DataFrame);
@@ -73,72 +67,145 @@ filter!(:date => x -> SIM_BEG <= x <= SIM_END, df_tsdp);
 filter!(:date => x -> SIM_BEG <= x <= SIM_END, df_tsdw);
 filter!(:date => x -> SIM_BEG <= x <= SIM_END, df_tsdc);
 
-# DEFINE DISAGGREGATED ECON SHOCKS
+
+# DEFINE ECON SHOCKS
 t = Dates.value.(df_tsdp.date);
 
-l_notill = 1 .- (((1 .- A_MILD) .* df_tsdw.prev_mldi .+ df_tsdw.prev_sevi .+
+function compute_avl(P_FURL, A_WFH, PHI_ECO)
+
+    #relative productivity of workers who are mildly symptomatic
+    A_MILD = 0.50 .* A_WFH;
+    #relative productivity of workers who are caregiving to mildly symptomatic
+    A_CARE = 0.50 .* A_WFH;
+
+    l_notill = 1 .- (((1 .- A_MILD) .* df_tsdw.prev_mldi .+ df_tsdw.prev_sevi .+
              df_tsdw.occupancy_hosp .+ df_tsdw.deaths) ./ sum(N_WORK));
-l_notcar = 1 .-
-           EMP_POP .* (((1 .- A_CARE) .* df_tsdc.prev_mldi .+ df_tsdc.prev_sevi .+
-             df_tsdc.occupancy_hosp) ./ sum(N_WORK));
-l_notecl = 1 .- P_FURL .* (closure_date_02 .<= df_tsdw.date .<= SIM_END);
-l_notscl = 1 .-
-           EMP_POP .* (1 .- A_WFH) .* (N_SCHC ./ sum(N_WORK)) .*
-           (closure_date_01 .<= df_tsdc.date .<= SIM_END);
+    l_notcar = 1 .-
+            EMP_POP .* (((1 .- A_CARE) .* df_tsdc.prev_mldi .+ df_tsdc.prev_sevi .+
+                df_tsdc.occupancy_hosp) ./ sum(N_WORK));
+    l_notecl = 1 .- P_FURL .* (closure_date_02 .<= df_tsdw.date .<= SIM_END);
+    l_notscl = 1 .-
+            EMP_POP .* (1 .- A_WFH) .* (N_SCHC ./ sum(N_WORK)) .*
+            (closure_date_01 .<= df_tsdc.date .<= SIM_END);
 
-l_avl = l_notill .* l_notcar .* l_notecl .* l_notscl;
-c_avl = exp.(-PHI_ECO .* [0; diff(df_tsdp.deaths)]);
+    l_avl = l_notill .* l_notcar .* l_notecl .* l_notscl;
+    c_avl = exp.(-PHI_ECO .* [0; diff(df_tsdp.deaths)]);
 
-# AGGREGATE SHOCKS FOR NIGEM
-l_agg = sum(l_avl .* (N_WORK ./ sum(N_WORK)), dims = 2);
-c_agg = sum(c_avl .* (E_HHC ./ sum(E_HHC)), dims = 2);
+    l_avlcum = trapz(t, l_avl')' ./ (t[end] - t[1]);
+    c_avlcum = trapz(t, c_avl')' ./ (t[end] - t[1]);
 
-l_aggcum = trapz(t, l_agg') / (t[end] - (t[1] - 1.0));
-c_aggcum = trapz(t, c_agg') / (t[end] - (t[1] - 1.0));
+    return l_avlcum, c_avlcum
+end
 
-l_shock = 100 .* (l_aggcum .- 1);
-c_shock = 100 .* (c_aggcum .- 1);
+#distribution 
+nsamples  = 1000;
+l_avldist = zeros(nsamples, length(N_WORK));
+c_avldist = zeros(nsamples, length(N_WORK));
 
-# WRITE DATAFRAME OF OUTPUTS
-outdir = "data/outputs/casestudy_01/"
-df_shocks = DataFrame(quarter = collect(1:length(l_shock)), UKE = l_shock, UKC = c_shock);
-CSV.write(joinpath(outdir, "NIGEM_central.csv"), df_shocks);
+for i = 1:nsamples;
+    rv_furl = rand(Uniform(0.5, 1.0));
+    rv_wfh  = rand(Gamma(30, 1/30));
+    rv_phi  = rand(Gamma(30, 0.0075/30));
 
-# AGGREGATE SHOCKS FOR GTAP
-# NOTE: this needs to be explained better and generalised if possible
-W = zeros(20, 7);
-W[CartesianIndex.([1, 1, 2, 3, 3], [1, 2, 3, 4, 5])] .= 1;
-W[[4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17], 6] = E_HHC[[
-    4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17]] ./ sum(E_HHC[[
-    4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17]]);
-W[[8, 9, 18, 19, 20], 7] = E_HHC[[8, 9, 18, 19, 20]] ./ sum(E_HHC[[8, 9, 18, 19, 20]]);
+    l_avlcum, c_avlcum = compute_avl(rv_furl .* P_FURL, min.(rv_wfh .* A_WFH, 1.0), rv_phi .* PHI_ECO ./ 0.01);
 
-l_agg = sum(l_avl .* (N_WORK ./ sum(N_WORK)), dims = 2);
-c_agg = c_avl * W;
+    l_avldist[i, :] = l_avlcum;
+    c_avldist[i, :] = c_avlcum;
+end
 
-l_aggcum = first(trapz(t, l_agg') / (t[end] - (t[1] - 1.0))); # get float from vec
-c_aggcum = trapz(t, c_agg') / (t[end] - (t[1] - 1.0));
 
-# DEFINE PARAMETER SHOCKS FOR EPIECONSHOCKS.JL
-#labour shock affects all regions and sectors equally
-labour_shock = ParameterShock(
-    "qe", ["skilled labour", "unskilled labour"], l_aggcum);
-consumption_shock = ParameterShock("qpa",
-    ["crops", "animals", "extract", "processed food",
-        "manuf", "svces", "tpt_hosp_leis"],
-    c_aggcum);
+# NIGEM: AGGREGATE AND SAVE SHOCKS 
+l_avlagg = sum(l_avldist .* (N_WORK ./ sum(N_WORK)), dims = 2);
+c_avlagg = sum(c_avldist .* (E_HHC ./ sum(E_HHC)), dims = 2);
 
-# GENERATE INITIAL MODEL FROM GTAP 11 data in `data/raw/gtap11`
-datadir_gtap = "data/raw/gtap11/";
-model = EpiEconShocks.ModelInit.initial_gtap_model(datadir_gtap);
+l_avlagg = l_avlagg .* (1 - P_UNEM);
 
-# RUN MODEL AFTER PASSING SHOCKS
-output = shock_gtap(model, [labour_shock, consumption_shock]);
+l_shock  = 100 .* (l_avlagg .- 1);
+c_shock  = 100 .* (c_avlagg .- 1);
 
-# GET CHANGE IN GDP BETWEEN EQUILIBRIA
-delta_gdp = DataFrame(
-    region = names(output.delta_gdp)[begin],
-    delta_gdp = output.delta_gdp
-)
+#write dataframe of outputs
+outdir    = "data/outputs/casestudy_01/"
+df_shocks = DataFrame(quarter     = collect(1:size(l_shock,2)), 
+                      UKLFWA_pess = quantile(l_shock, [0.025]), 
+                      UKLFWA_cent = quantile(l_shock, [0.500]), 
+                      UKLFWA_opti = quantile(l_shock, [0.975]), 
+                      UKC_pess    = quantile(c_shock, [0.025]), 
+                      UKC_cent    = quantile(c_shock, [0.500]), 
+                      UKC_opti    = quantile(c_shock, [0.975]));
+CSV.write(joinpath(outdir, "NIGEM.csv"), df_shocks);
 
-CSV.write(joinpath(outdir, "cs_01_GTAP_delta_gdp_central.csv"), delta_gdp);
+
+
+
+
+
+
+
+
+
+
+
+
+# # GTAP: RUN BASELINE AND IMPOSE SHOCKS
+# #generate initial model from GTAP 11 data in `data/raw/gtap11`
+# datadir_gtap = "data/raw/gtap11/";
+# model        = EpiEconShocks.ModelInit.initial_gtap_model(datadir_gtap);
+
+# #define wrapper function for shocks
+# function run_gtap(l_avl, c_avl)
+
+#     #note: this needs to be explained better and generalised if possible
+#     W = zeros(20, 7);
+#     W[CartesianIndex.([1, 1, 2, 3, 3], [1, 2, 3, 4, 5])] .= 1;
+#     W[[4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17], 6] = E_HHC[[
+#         4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17]] ./ sum(E_HHC[[
+#         4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17]]);
+#     W[[8, 9, 18, 19, 20], 7] = E_HHC[[8, 9, 18, 19, 20]] ./ sum(E_HHC[[8, 9, 18, 19, 20]]);
+
+#     l_agg = sum(l_avl .* (N_WORK ./ sum(N_WORK)), dims = 2);
+#     c_agg = c_avl * W;
+
+#     @@@l_aggcum = first(trapz(t, l_agg') / (t[end] - (t[1] - 1.0))); # get float from vec
+#     @@@@c_aggcum = trapz(t, c_agg') / (t[end] - (t[1] - 1.0));
+
+#     #define parameter shocks for EPIECONSHOCKS.JL
+#     #labour shock affects all regions and sectors equally
+#     labour_shock = ParameterShock(
+#         "qe", ["skilled labour", "unskilled labour"], l_aggcum);
+#     consumption_shock = ParameterShock("qpa",
+#         ["crops", "animals", "extract", "processed food",
+#             "manuf", "svces", "tpt_hosp_leis"],
+#         c_aggcum);
+
+#     #run model after passing shocks
+#     output = shock_gtap(model, [labour_shock, consumption_shock]);
+#     return output
+# end
+
+# #run GTAP model with shocks
+# output_pess = run_gtap(l_avl_pess, c_avl_pess);
+# output_cent = run_gtap(l_avl_cent, c_avl_cent);
+# output_opti = run_gtap(l_avl_opti, c_avl_opti);
+
+
+
+# #distribution
+# nsamples  = 100;
+# gdpl_dist = zeros(nsamples, 4);
+
+# for i = 1:nsamples;
+#     rv_furl = rand(Uniform(0.5, 1.0));
+#     rv_wfh  = rand(Gamma(30, 1/30));
+#     rv_phi  = rand(Gamma(30, 0.0075/30));
+
+#     l_avl_rand, c_avl_rand = compute_avl(rv_furl .* P_FURL, min.(rv_wfh .* A_WFH, 1.0), rv_phi .* PHI_ECO ./ 0.01);
+    
+#     output_rand = run_gtap(l_avl_rand, c_avl_rand);
+
+#     gdpl =  - output_rand.delta_gdp[9] * 100;
+
+#     gdpl_dist[i, :] = [rv_furl, rv_wfh, rv_phi, gdpl];
+# end
+
+# gdpl_dist = DataFrame(gdpl_dist, [:rv_furl, :rv_wfh, :rv_phi, :gdpl]);
+# CSV.write(joinpath(outdir, "gdpl_dist.csv"), gdpl_dist);
