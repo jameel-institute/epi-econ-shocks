@@ -136,4 +136,9 @@ model = EpiEconShocks.ModelInit.initial_gtap_model(datadir_gtap);
 output = shock_gtap(model, [labour_shock, consumption_shock]);
 
 # GET CHANGE IN GDP BETWEEN EQUILIBRIA
-output.delta_gdp
+delta_gdp = DataFrame(
+    region = names(output.delta_gdp)[begin],
+    delta_gdp = output.delta_gdp
+)
+
+CSV.write(joinpath(outdir, "cs_01_GTAP_delta_gdp_central.csv"), delta_gdp);

@@ -11,8 +11,10 @@ using CSV
 using Daedalus
 using DataFrames
 using EpiEconShocks
+using Statistics
 
 #### Helper function ####
+
 # Note: part of this is internal in Daedalus.Outputs.get_values, but this
 # bit is needed here
 """
@@ -85,9 +87,34 @@ df_shocks = DataFrame(
     UKE = l_shock, UKC = c_shock);
 CSV.write(joinpath(outdir, "cs_02_NIGEM_central.csv"), df_shocks);
 
-#### PREPARE SHOCK VALUES FOR GTAP RUNS ####
+#### PREPARE SHOCK VALUES FOR GTAP ####
 # GTAP has no representation of time and should be run with shocks
 # representing some new equilibrium
 # we choose to run GTAP at the end of the 720 day (8 quarter) period
 
-# WIP
+# mean labour available
+l_aggcum = mean(l_aggcum);
+c_aggcum = mean(c_aggcum);
+
+# DEFINE PARAMETER SHOCKS FOR EPIECONSHOCKS.JL
+#labour shock affects all regions and sectors equally
+labour_shock = ParameterShock(
+    "qe", ["skilled labour", "unskilled labour"], l_aggcum);
+consumption_shock = ParameterShock("qpa",
+    ["crops", "animals", "extract", "processed food",
+        "manuf", "svces", "tpt_hosp_leis"],
+    c_aggcum);
+
+# GENERATE INITIAL MODEL FROM GTAP 11 data in `data/raw/gtap11`
+datadir_gtap = "data/raw/gtap11/";
+model = EpiEconShocks.ModelInit.initial_gtap_model(datadir_gtap);
+
+# RUN MODEL AFTER PASSING SHOCKS
+output = shock_gtap(model, [labour_shock, consumption_shock]);
+
+# GET CHANGE IN GDP BETWEEN EQUILIBRIA
+delta_gdp = DataFrame(
+    region = names(output.delta_gdp)[begin],
+    delta_gdp = output.delta_gdp
+)
+CSV.write(joinpath(outdir, "cs_02_GTAP_delta_gdp_central.csv"), delta_gdp);
