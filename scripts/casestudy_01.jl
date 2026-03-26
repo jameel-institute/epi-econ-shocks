@@ -4,6 +4,7 @@ using XLSX
 using DataFrames
 using Dates
 using StatsBase
+using Random
 using Trapz
 using EpiEconShocks
 using Distributions
@@ -135,77 +136,55 @@ df_shocks = DataFrame(quarter     = collect(1:size(l_shock,2)),
 CSV.write(joinpath(outdir, "NIGEM.csv"), df_shocks);
 
 
+# GTAP: RUN BASELINE AND IMPOSE SHOCKS
+#generate initial model from GTAP 11 data in `data/raw/gtap11`
+datadir_gtap = "data/raw/gtap11/";
+model        = EpiEconShocks.ModelInit.initial_gtap_model(datadir_gtap);
 
+#note: this needs to be explained better and generalised if possible
+W = zeros(20, 10);
+G = ([1,2],[3],[4,5],[6],[7],[8],[9],[10,11,12,13,14],[15,16,17],[18,19,20]);
 
+for (i,g) in enumerate(G);
+    W[g,i] = E_HHC[g] ./ sum(E_HHC[g]);
+end
 
+l_avlagg = sum(l_avldist .* (N_WORK ./ sum(N_WORK)), dims = 2);
+c_avlagg = c_avldist * W;
 
+#define wrapper function for shocks
+function run_gtap(l_shock, c_shock)
 
+    #labour shock affects all regions and sectors equally
+    labour_shock      = ParameterShock("qe",  ["skilled labour", "unskilled labour"], l_shock);
+    consumption_shock = ParameterShock("qpa", ["allprimary", "manufac", "utilities", "constr", "retail", 
+                                               "transport", "hosp", "ict_prof_serv", "pubadm", "arts_rec_other"], c_shock);
 
+    #run model after passing shocks
+    output = shock_gtap(model, [labour_shock, consumption_shock]);
 
+    return output
+end
 
+#run GTAP model with shocks for same scenarios as NIGEM
+output_pess = run_gtap(quantile(l_avlagg, [0.025]),
+                       quantile.(eachcol(c_avlagg), 0.025));
+output_cent = run_gtap(quantile(l_avlagg, [0.500]),
+                       quantile.(eachcol(c_avlagg), 0.500));
+output_opti = run_gtap(quantile(l_avlagg, [0.975]),
+                       quantile.(eachcol(c_avlagg), 0.975));
 
+#distribution of outcomes
+n_iter = 100;
+gdpl   = zeros(n_iter,1);
 
+for i in 1:n_iter;
+    l_shock = rand(l_avlagg);
+    c_shock = rand.(eachcol(c_avlagg));
 
-# # GTAP: RUN BASELINE AND IMPOSE SHOCKS
-# #generate initial model from GTAP 11 data in `data/raw/gtap11`
-# datadir_gtap = "data/raw/gtap11/";
-# model        = EpiEconShocks.ModelInit.initial_gtap_model(datadir_gtap);
+    output  = run_gtap(l_shock, c_shock);
+    gdpl[i] = - output.delta_gdp[9] * 100;
+end
 
-# #define wrapper function for shocks
-# function run_gtap(l_avl, c_avl)
-
-#     #note: this needs to be explained better and generalised if possible
-#     W = zeros(20, 7);
-#     W[CartesianIndex.([1, 1, 2, 3, 3], [1, 2, 3, 4, 5])] .= 1;
-#     W[[4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17], 6] = E_HHC[[
-#         4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17]] ./ sum(E_HHC[[
-#         4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17]]);
-#     W[[8, 9, 18, 19, 20], 7] = E_HHC[[8, 9, 18, 19, 20]] ./ sum(E_HHC[[8, 9, 18, 19, 20]]);
-
-#     l_agg = sum(l_avl .* (N_WORK ./ sum(N_WORK)), dims = 2);
-#     c_agg = c_avl * W;
-
-#     @@@l_aggcum = first(trapz(t, l_agg') / (t[end] - (t[1] - 1.0))); # get float from vec
-#     @@@@c_aggcum = trapz(t, c_agg') / (t[end] - (t[1] - 1.0));
-
-#     #define parameter shocks for EPIECONSHOCKS.JL
-#     #labour shock affects all regions and sectors equally
-#     labour_shock = ParameterShock(
-#         "qe", ["skilled labour", "unskilled labour"], l_aggcum);
-#     consumption_shock = ParameterShock("qpa",
-#         ["crops", "animals", "extract", "processed food",
-#             "manuf", "svces", "tpt_hosp_leis"],
-#         c_aggcum);
-
-#     #run model after passing shocks
-#     output = shock_gtap(model, [labour_shock, consumption_shock]);
-#     return output
-# end
-
-# #run GTAP model with shocks
-# output_pess = run_gtap(l_avl_pess, c_avl_pess);
-# output_cent = run_gtap(l_avl_cent, c_avl_cent);
-# output_opti = run_gtap(l_avl_opti, c_avl_opti);
-
-
-
-# #distribution
-# nsamples  = 100;
-# gdpl_dist = zeros(nsamples, 4);
-
-# for i = 1:nsamples;
-#     rv_furl = rand(Uniform(0.5, 1.0));
-#     rv_wfh  = rand(Gamma(30, 1/30));
-#     rv_phi  = rand(Gamma(30, 0.0075/30));
-
-#     l_avl_rand, c_avl_rand = compute_avl(rv_furl .* P_FURL, min.(rv_wfh .* A_WFH, 1.0), rv_phi .* PHI_ECO ./ 0.01);
-    
-#     output_rand = run_gtap(l_avl_rand, c_avl_rand);
-
-#     gdpl =  - output_rand.delta_gdp[9] * 100;
-
-#     gdpl_dist[i, :] = [rv_furl, rv_wfh, rv_phi, gdpl];
-# end
-
-# gdpl_dist = DataFrame(gdpl_dist, [:rv_furl, :rv_wfh, :rv_phi, :gdpl]);
-# CSV.write(joinpath(outdir, "gdpl_dist.csv"), gdpl_dist);
+df_gpdl = DataFrame(gdpl = gdpl);
+CSV.write(joinpath(outdir, "GTAP.csv"), df_gpdl);
