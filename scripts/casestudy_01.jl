@@ -9,7 +9,6 @@ using Trapz
 using EpiEconShocks
 using Distributions
 
-
 # PARAMETERS
 #population by age in 2024 scaled to total population (https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/populationestimatesforukenglandandwalesscotlandandnorthernireland)
 N_TOT = 66930425; #total population (via email)
@@ -49,14 +48,12 @@ E_HHC = [28978.715, 4717.879, 360055.722, 55604.819, 17992.213,
 PHI_ECO = 0.01 * (19216182.0 / N_TOT) .*
           [0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0]';
 
-
 # SIMULATION AND CLOSURE DATES
 SIM_END = Date(2025, 11, 25); #end of exercise
 SIM_BEG = SIM_END - Day(90);
 
 closure_date_01 = Date(2025, 10, 10);
 closure_date_02 = Date(2025, 10, 31);
-
 
 # READ IN EPI DATA
 datadir = "data/raw/casestudy_01";
@@ -68,10 +65,10 @@ filter!(:date => x -> SIM_BEG <= x <= SIM_END, df_tsdp);
 filter!(:date => x -> SIM_BEG <= x <= SIM_END, df_tsdw);
 filter!(:date => x -> SIM_BEG <= x <= SIM_END, df_tsdc);
 
-
 # DEFINE ECON SHOCKS
 t = Dates.value.(df_tsdp.date);
 
+# TODO: add to EpiEconShocks
 function compute_avl(P_FURL, A_WFH, PHI_ECO)
 
     #relative productivity of workers who are mildly symptomatic
@@ -80,14 +77,14 @@ function compute_avl(P_FURL, A_WFH, PHI_ECO)
     A_CARE = 0.50 .* A_WFH;
 
     l_notill = 1 .- (((1 .- A_MILD) .* df_tsdw.prev_mldi .+ df_tsdw.prev_sevi .+
-             df_tsdw.occupancy_hosp .+ df_tsdw.deaths) ./ sum(N_WORK));
+                 df_tsdw.occupancy_hosp .+ df_tsdw.deaths) ./ sum(N_WORK));
     l_notcar = 1 .-
-            EMP_POP .* (((1 .- A_CARE) .* df_tsdc.prev_mldi .+ df_tsdc.prev_sevi .+
-                df_tsdc.occupancy_hosp) ./ sum(N_WORK));
+               EMP_POP .* (((1 .- A_CARE) .* df_tsdc.prev_mldi .+ df_tsdc.prev_sevi .+
+                 df_tsdc.occupancy_hosp) ./ sum(N_WORK));
     l_notecl = 1 .- P_FURL .* (closure_date_02 .<= df_tsdw.date .<= SIM_END);
     l_notscl = 1 .-
-            EMP_POP .* (1 .- A_WFH) .* (N_SCHC ./ sum(N_WORK)) .*
-            (closure_date_01 .<= df_tsdc.date .<= SIM_END);
+               EMP_POP .* (1 .- A_WFH) .* (N_SCHC ./ sum(N_WORK)) .*
+               (closure_date_01 .<= df_tsdc.date .<= SIM_END);
 
     l_avl = l_notill .* l_notcar .* l_notecl .* l_notscl;
     c_avl = exp.(-PHI_ECO .* [0; diff(df_tsdp.deaths)]);
@@ -99,21 +96,25 @@ function compute_avl(P_FURL, A_WFH, PHI_ECO)
 end
 
 #distribution 
-nsamples  = 1000;
+nsamples = 1000;
 l_avldist = zeros(nsamples, length(N_WORK));
 c_avldist = zeros(nsamples, length(N_WORK));
 
-for i = 1:nsamples;
-    rv_furl = rand(Uniform(0.5, 1.0));
-    rv_wfh  = rand(Gamma(30, 1/30));
-    rv_phi  = rand(Gamma(30, 0.0075/30));
+# set seed to preserve outputs
+Random.seed!(1);
 
-    l_avlcum, c_avlcum = compute_avl(rv_furl .* P_FURL, min.(rv_wfh .* A_WFH, 1.0), rv_phi .* PHI_ECO ./ 0.01);
+for i in 1:nsamples
+    rv_furl = rand(Uniform(0.5, 1.0));
+    rv_wfh = rand(Gamma(30, 1/30));
+    rv_phi = rand(Gamma(30, 0.0075/30));
+
+    l_avlcum,
+    c_avlcum = compute_avl(rv_furl .* P_FURL, min.(rv_wfh .* A_WFH, 1.0), rv_phi .*
+                                                                          PHI_ECO ./ 0.01);
 
     l_avldist[i, :] = l_avlcum;
     c_avldist[i, :] = c_avlcum;
 end
-
 
 # NIGEM: AGGREGATE AND SAVE SHOCKS 
 l_avlagg = sum(l_avldist .* (N_WORK ./ sum(N_WORK)), dims = 2);
@@ -121,32 +122,32 @@ c_avlagg = sum(c_avldist .* (E_HHC ./ sum(E_HHC)), dims = 2);
 
 l_avlagg = l_avlagg .* (1 - P_UNEM);
 
-l_shock  = 100 .* (l_avlagg .- 1);
-c_shock  = 100 .* (c_avlagg .- 1);
+l_shock = 100 .* (l_avlagg .- 1);
+c_shock = 100 .* (c_avlagg .- 1);
 
 #write dataframe of outputs
-outdir    = "data/outputs/casestudy_01/"
-df_shocks = DataFrame(quarter     = collect(1:size(l_shock,2)), 
-                      UKLFWA_pess = quantile(l_shock, [0.025]), 
-                      UKLFWA_cent = quantile(l_shock, [0.500]), 
-                      UKLFWA_opti = quantile(l_shock, [0.975]), 
-                      UKC_pess    = quantile(c_shock, [0.025]), 
-                      UKC_cent    = quantile(c_shock, [0.500]), 
-                      UKC_opti    = quantile(c_shock, [0.975]));
+outdir = "data/outputs/casestudy_01/"
+df_shocks = DataFrame(quarter = collect(1:size(l_shock, 2)),
+    UKLFWA_pess = quantile(l_shock, [0.025]),
+    UKLFWA_cent = quantile(l_shock, [0.500]),
+    UKLFWA_opti = quantile(l_shock, [0.975]),
+    UKC_pess = quantile(c_shock, [0.025]),
+    UKC_cent = quantile(c_shock, [0.500]),
+    UKC_opti = quantile(c_shock, [0.975]));
 CSV.write(joinpath(outdir, "NIGEM.csv"), df_shocks);
-
 
 # GTAP: RUN BASELINE AND IMPOSE SHOCKS
 #generate initial model from GTAP 11 data in `data/raw/gtap11`
 datadir_gtap = "data/raw/gtap11/";
-model        = EpiEconShocks.ModelInit.initial_gtap_model(datadir_gtap);
+model = EpiEconShocks.ModelInit.initial_gtap_model(datadir_gtap);
 
 #note: this needs to be explained better and generalised if possible
 W = zeros(20, 10);
-G = ([1,2],[3],[4,5],[6],[7],[8],[9],[10,11,12,13,14],[15,16,17],[18,19,20]);
+G = ([1, 2], [3], [4, 5], [6], [7], [8], [9],
+    [10, 11, 12, 13, 14], [15, 16, 17], [18, 19, 20]);
 
-for (i,g) in enumerate(G);
-    W[g,i] = E_HHC[g] ./ sum(E_HHC[g]);
+for (i, g) in enumerate(G)
+    W[g, i] = E_HHC[g] ./ sum(E_HHC[g]);
 end
 
 l_avlagg = sum(l_avldist .* (N_WORK ./ sum(N_WORK)), dims = 2);
@@ -156,9 +157,11 @@ c_avlagg = c_avldist * W;
 function run_gtap(l_shock, c_shock)
 
     #labour shock affects all regions and sectors equally
-    labour_shock      = ParameterShock("qe",  ["skilled labour", "unskilled labour"], l_shock);
-    consumption_shock = ParameterShock("qpa", ["allprimary", "manufac", "utilities", "constr", "retail", 
-                                               "transport", "hosp", "ict_prof_serv", "pubadm", "arts_rec_other"], c_shock);
+    labour_shock = ParameterShock("qe", ["skilled labour", "unskilled labour"], l_shock);
+    consumption_shock = ParameterShock("qpa",
+        ["allprimary", "manufac", "utilities", "constr", "retail",
+            "transport", "hosp", "ict_prof_serv", "pubadm", "arts_rec_other"],
+        c_shock);
 
     #run model after passing shocks
     output = shock_gtap(model, [labour_shock, consumption_shock]);
@@ -167,23 +170,29 @@ function run_gtap(l_shock, c_shock)
 end
 
 #run GTAP model with shocks for same scenarios as NIGEM
-output_pess = run_gtap(quantile(l_avlagg, [0.025]),
-                       quantile.(eachcol(c_avlagg), 0.025));
+# NOTE: need fn `compare_gtaps` with `model` initial model as baseline
+# to get delta GDP
+output_pess = run_gtap(quantile(l_avlagg, [0.025])[begin],
+    quantile.(eachcol(c_avlagg), 0.025));
 output_cent = run_gtap(quantile(l_avlagg, [0.500]),
-                       quantile.(eachcol(c_avlagg), 0.500));
+    quantile.(eachcol(c_avlagg), 0.500));
 output_opti = run_gtap(quantile(l_avlagg, [0.975]),
-                       quantile.(eachcol(c_avlagg), 0.975));
+    quantile.(eachcol(c_avlagg), 0.975));
 
 #distribution of outcomes
 n_iter = 100;
-gdpl   = zeros(n_iter,1);
+gdpl = zeros(n_iter, 1);
 
-for i in 1:n_iter;
+for i in 1:n_iter
     l_shock = rand(l_avlagg);
     c_shock = rand.(eachcol(c_avlagg));
 
-    output  = run_gtap(l_shock, c_shock);
-    gdpl[i] = - output.delta_gdp[9] * 100;
+    output = run_gtap(l_shock, c_shock);
+
+    # NOTE: need new fn `compare_gtaps`
+    # can be indexed by name, is NamedArray
+    delta_gdp = compare_gtaps(model, output)
+    gdpl[i] = - delta_gdp["gbr"] * 100;
 end
 
 df_gpdl = DataFrame(gdpl = gdpl);
