@@ -5,6 +5,7 @@ using DataFrames
 using Dates
 using StatsBase
 using Random
+using Random
 using Trapz
 using EpiEconShocks
 using Distributions
@@ -22,6 +23,8 @@ N_WORK = [
     358891, 53525, 2445007, 131789, 201530, 2141882, 4532352, 1644253, 2412496, 1492821,
     1110370, 629758, 2975812, 2734434, 1567856, 2723349, 4545941, 963524, 889977, 57176]' .*
          (N_TOT ./ 69281437);
+#unemployment rate in 2025 Q4 (https://www.ons.gov.uk/employmentandlabourmarket/peopleinwork/employmentandemployeetypes/datasets/summaryoflabourmarketstatistics)
+P_UNEM = 0.052;
 #unemployment rate in 2025 Q4 (https://www.ons.gov.uk/employmentandlabourmarket/peopleinwork/employmentandemployeetypes/datasets/summaryoflabourmarketstatistics)
 P_UNEM = 0.052;
 
@@ -56,7 +59,7 @@ closure_date_01 = Date(2025, 10, 10);
 closure_date_02 = Date(2025, 10, 31);
 
 # READ IN EPI DATA
-datadir = "data/raw/casestudy_01";
+datadir = "data/raw/casestudy_01";;
 df_tsdp = CSV.read(joinpath(datadir, "tsdp.csv"), DataFrame);
 df_tsdw = CSV.read(joinpath(datadir, "tsdw.csv"), DataFrame);
 df_tsdc = CSV.read(joinpath(datadir, "tsdc.csv"), DataFrame);
@@ -135,41 +138,6 @@ df_shocks = DataFrame(quarter = collect(1:size(l_shock, 2)),
     UKC_cent = quantile(c_shock, [0.500]),
     UKC_opti = quantile(c_shock, [0.975]));
 CSV.write(joinpath(outdir, "NIGEM.csv"), df_shocks);
-
-
-# PLOTTING: SAVE SHOCKS
-#write dataframe of schocks over time
-A_MILD = 0.50 .* A_WFH;
-A_CARE = 0.50 .* A_WFH;
-l_notill = 1 .- (((1 .- A_MILD) .* df_tsdw.prev_mldi .+ df_tsdw.prev_sevi .+
-            df_tsdw.occupancy_hosp .+ df_tsdw.deaths) ./ sum(N_WORK));
-l_notcar = 1 .-
-        EMP_POP .* (((1 .- A_CARE) .* df_tsdc.prev_mldi .+ df_tsdc.prev_sevi .+
-            df_tsdc.occupancy_hosp) ./ sum(N_WORK));
-l_notecl = 1 .- 0.75.*P_FURL .* (closure_date_02 .<= df_tsdw.date .<= SIM_END);
-l_notscl = 1 .-
-        EMP_POP .* (1 .- A_WFH) .* (N_SCHC ./ sum(N_WORK)) .*
-        (closure_date_01 .<= df_tsdc.date .<= SIM_END);
-
-l_avl = l_notill .* l_notcar .* l_notecl .* l_notscl;
-c_avl = exp.((-0.0075 .* PHI_ECO ./ 0.01) .* [0; diff(df_tsdp.deaths)]);
-
-l_avlaggt = sum(l_avl .* (N_WORK ./ sum(N_WORK)), dims = 2);
-c_avlaggt = c_avl[:,7];
-
-df_times = DataFrame(times     = Date.(Dates.UTD.(t)),
-                     wf_pcred  = vec(100 .* (l_avlaggt .- 1)),
-                     ccf_pcred = 100 .* (c_avlaggt .- 1));
-CSV.write(joinpath(outdir, "shock_times.csv"), df_times);
-
-#write dataframe of shock samples
-df_samples = DataFrame(samples    = 1:nsamples,
-                       wf_pcred   = vec(100 .* (sum(l_avldist .* (N_WORK ./ sum(N_WORK)), dims = 2) .- 1)),
-                       ccf_pcred  = 100 .* (c_avldist[:,7] .- 1),
-                       lf_pcred   = vec(l_shock),
-                       cagg_pcred = vec(c_shock)); 
-CSV.write(joinpath(outdir, "shock_samples.csv"), df_samples);
-
 
 # GTAP: RUN BASELINE AND IMPOSE SHOCKS
 #generate initial model from GTAP 11 data in `data/raw/gtap11`
