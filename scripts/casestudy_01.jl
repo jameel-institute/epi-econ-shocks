@@ -10,8 +10,6 @@ using Trapz
 using EpiEconShocks
 using Distributions
 
-using Distributions
-
 # PARAMETERS
 #population by age in 2024 scaled to total population (https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/populationestimatesforukenglandandwalesscotlandandnorthernireland)
 N_TOT = 66930425; #total population (via email)
@@ -143,6 +141,41 @@ df_shocks = DataFrame(quarter = collect(1:size(l_shock, 2)),
     UKC_opti = quantile(c_shock, [0.975]));
 CSV.write(joinpath(outdir, "NIGEM.csv"), df_shocks);
 
+
+# PLOTTING: SAVE SHOCKS
+#write dataframe of schocks over time
+A_MILD = 0.50 .* A_WFH;
+A_CARE = 0.50 .* A_WFH;
+l_notill = 1 .- (((1 .- A_MILD) .* df_tsdw.prev_mldi .+ df_tsdw.prev_sevi .+
+            df_tsdw.occupancy_hosp .+ df_tsdw.deaths) ./ sum(N_WORK));
+l_notcar = 1 .-
+        EMP_POP .* (((1 .- A_CARE) .* df_tsdc.prev_mldi .+ df_tsdc.prev_sevi .+
+            df_tsdc.occupancy_hosp) ./ sum(N_WORK));
+l_notecl = 1 .- 0.75.*P_FURL .* (closure_date_02 .<= df_tsdw.date .<= SIM_END);
+l_notscl = 1 .-
+        EMP_POP .* (1 .- A_WFH) .* (N_SCHC ./ sum(N_WORK)) .*
+        (closure_date_01 .<= df_tsdc.date .<= SIM_END);
+
+l_avl = l_notill .* l_notcar .* l_notecl .* l_notscl;
+c_avl = exp.((-0.0075 .* PHI_ECO ./ 0.01) .* [0; diff(df_tsdp.deaths)]);
+
+l_avlaggt = sum(l_avl .* (N_WORK ./ sum(N_WORK)), dims = 2);
+c_avlaggt = c_avl[:,7];
+
+df_times = DataFrame(times     = Date.(Dates.UTD.(t)),
+                     wf_pcred  = vec(100 .* (l_avlaggt .- 1)),
+                     ccf_pcred = 100 .* (c_avlaggt .- 1));
+CSV.write(joinpath(outdir, "shock_times.csv"), df_times);
+
+#write dataframe of shock samples
+df_samples = DataFrame(samples    = 1:nsamples,
+                       wf_pcred   = vec(100 .* (sum(l_avldist .* (N_WORK ./ sum(N_WORK)), dims = 2) .- 1)),
+                       ccf_pcred  = 100 .* (c_avldist[:,7] .- 1),
+                       lf_pcred   = vec(l_shock),
+                       cagg_pcred = vec(c_shock)); 
+CSV.write(joinpath(outdir, "shock_samples.csv"), df_samples);
+
+
 # GTAP: RUN BASELINE AND IMPOSE SHOCKS
 #generate initial model from GTAP 11 data in `data/raw/gtap11`
 datadir_gtap = "data/raw/gtap11/";
@@ -181,26 +214,48 @@ end
 # to get delta GDP
 output_pess = run_gtap(quantile(l_avlagg, [0.025])[begin],
     quantile.(eachcol(c_avlagg), 0.025));
-output_cent = run_gtap(quantile(l_avlagg, [0.500]),
+output_cent = run_gtap(quantile(l_avlagg, [0.500])[begin],
     quantile.(eachcol(c_avlagg), 0.500));
-output_opti = run_gtap(quantile(l_avlagg, [0.975]),
+output_opti = run_gtap(quantile(l_avlagg, [0.975])[begin],
     quantile.(eachcol(c_avlagg), 0.975));
 
-#distribution of outcomes
-n_iter = 100;
-gdpl = zeros(n_iter, 1);
+# #distribution of outcomes
+# n_iter = 100;
+# gdpl = zeros(n_iter, 1);
 
-for i in 1:n_iter
-    l_shock = rand(l_avlagg);
-    c_shock = rand.(eachcol(c_avlagg));
+# for i in 1:n_iter
+#     l_shock = rand(l_avlagg);
+#     c_shock = rand.(eachcol(c_avlagg));
 
-    output = run_gtap(l_shock, c_shock);
+#     output = run_gtap(l_shock, c_shock);
 
-    # NOTE: need new fn `compare_gtaps`
-    # can be indexed by name, is NamedArray
-    delta_gdp = compare_gtaps(model, output)
-    gdpl[i] = - delta_gdp["gbr"] * 100;
-end
+#     # NOTE: need new fn `compare_gtaps`
+#     # can be indexed by name, is NamedArray
+#     delta_gdp = compare_gtaps(model, output)
+#     gdpl[i] = - delta_gdp["gbr"] * 100;
+# end
 
-df_gpdl = DataFrame(gdpl = gdpl);
-CSV.write(joinpath(outdir, "GTAP.csv"), df_gpdl);
+# df_gpdl = DataFrame(gdpl = gdpl);
+# CSV.write(joinpath(outdir, "GTAP.csv"), df_gpdl);
+
+#outputs
+countries = names(model.data["y"])                                                      # country names
+
+dgdp      = 100 .* delta_gdp.delta_gdp;
+dqinv     = 100 .* ((output_pess.data["qinv"] .- model.data["qinv"]) ./ model.data["qinv"]); # % investment change
+dyp       = 100 .* ((output_pess.data["yp"] .- model.data["yp"]) ./ model.data["yp"]);         # % household consumption change
+
+dqgdp_sector = transpose(100 .* ((output_pess.data["qgd"] .- model.data["qgd"]) ./ model.data["qgd"]));  # % GVA volume change by sector
+dpgdp_sector = transpose(100 .* ((output_pess.data["pgd"] .- model.data["pgd"]) ./ model.data["pgd"]));  # % GVA price change by sector
+cnames = countries[1]
+
+df = DataFrame(
+    :country => cnames,
+    :dgdp => collect(dgdp),
+    :dqinv => collect(dqinv),
+    :dyp => collect(dyp),
+    (Symbol("dqgdp_", c) => dqgdp_sector[:, c] for c in names(dqgdp_sector, 2))...,
+    (Symbol("dpgdp_", c) => dpgdp_sector[:, c] for c in names(dpgdp_sector, 2))...
+)
+
+CSV.write(joinpath(outdir, "GTAP.csv"), df);
