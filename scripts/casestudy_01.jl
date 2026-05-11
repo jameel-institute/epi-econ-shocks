@@ -51,14 +51,12 @@ E_HHC = [28978.715, 4717.879, 360055.722, 55604.819, 17992.213,
 PHI_ECO = 0.01 * (19216182.0 / N_TOT) .*
           [0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0]';
 
-
 # SIMULATION AND CLOSURE DATES
 SIM_END = Date(2025, 11, 25); #end of exercise
 SIM_BEG = SIM_END - Day(90);
 
 closure_date_01 = Date(2025, 10, 10);
 closure_date_02 = Date(2025, 10, 31);
-
 
 # READ IN EPI DATA
 datadir = "data/raw/casestudy_01";;
@@ -179,7 +177,7 @@ CSV.write(joinpath(outdir, "shock_samples.csv"), df_samples);
 # GTAP: RUN BASELINE AND IMPOSE SHOCKS
 #generate initial model from GTAP 11 data in `data/raw/gtap11`
 datadir_gtap = "data/raw/gtap11/";
-model        = EpiEconShocks.ModelInit.initial_gtap_model(datadir_gtap);
+model = EpiEconShocks.ModelInit.initial_gtap_model(datadir_gtap);
 
 #note: this needs to be explained better and generalised if possible
 W = zeros(20, 10);
